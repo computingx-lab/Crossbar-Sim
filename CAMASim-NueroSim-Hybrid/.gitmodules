@@ -1,7 +1,0 @@
-[submodule "modules/CAMASIM"]
-	path = modules/CAMASIM
-	url = https://github.com/camasim-project/CAMASim
-[submodule "modules/NeuroSim"]
-	path = modules/NeuroSim
-	url = https://github.com/neurosim/NeuroSim.git
-	branch = 2DInferenceV1.5-dev
