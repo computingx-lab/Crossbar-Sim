@@ -1,0 +1,3 @@
+User assigned speed-up degree is larger than the upper bound (where no idle period during the whole process) 
+The speed-up degree is auto-assigned as the upper bound (where no idle period during the whole process) 
+ERROR: SubArray Size is too large, which break the chip hierarchey, please decrease the SubArray size! 

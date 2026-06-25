@@ -1,0 +1,47 @@
+{
+    "peripheral_cost": {
+        "adder": {"latency": 244, "energy": 1.33E-15}, 
+        "register": {"latency": 488, "energy": 4.5E-15},
+        "comparator": {"latency": 244, "energy": 4.52E-16 },
+        "decoder": {"latency": 244, "energy": 2.898E-14 },
+        "encoder": {"latency": 244, "energy": 2.898E-14}
+    },
+    "array_cost": {
+        "TCAM_64": {
+            "subarray": {"latency": 2600, "energy": 1.28E-12},
+            "interconnect": {"latency": 175, "energy": 2.25E-13},
+            "peripheral": {"latency": 1466.666667, "energy": 1.60E-12},
+            "write": {"latency": 20000, "energy": 2.35E-11}
+        },
+        "TCAM_128": {
+            "subarray": {"latency": 4200, "energy": 2.56E-12},
+            "interconnect": {"latency": 277, "energy": 3.67E-13},
+            "peripheral": {"latency": 1466.666667, "energy": 1.60E-12},
+            "write": {"latency": 20000, "energy": 4.70E-11}
+        },
+        "MCAM2b_64": {
+            "subarray": {"latency": 3500, "energy": 1.73E-12},
+            "interconnect": {"latency": 175, "energy": 2.25E-13},
+            "peripheral": {"latency": 1466.666667, "energy": 1.60E-12},
+            "write": {"latency": 20000, "energy": 2.32E-11}
+        },
+        "MCAM2b_128": {
+            "subarray": {"latency": 5800, "energy": 3.45E-12},
+            "interconnect": {"latency": 277, "energy": 3.67E-13},
+            "peripheral": {"latency": 1466.666667, "energy": 1.60E-12},
+            "write": {"latency": 20000, "energy": 4.63E-11}
+        },
+        "MCAM3b_64": {
+            "subarray": {"latency": 3500, "energy": 1.84E-12},
+            "interconnect": {"latency": 175, "energy": 2.25E-13},
+            "peripheral": {"latency": 1466.666667, "energy": 1.60E-12},
+            "write": {"latency": 20000, "energy": 2.89E-11}
+        },
+        "MCAM3b_128": {
+            "subarray": {"latency": 5800, "energy": 3.68E-12},
+            "interconnect": {"latency": 277, "energy": 3.67E-13},
+            "peripheral": {"latency": 1466.666667, "energy": 1.60E-12},
+            "write": {"latency": 20000, "energy": 5.79E-11}
+        }
+    }
+}
