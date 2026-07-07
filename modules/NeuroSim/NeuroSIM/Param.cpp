@@ -58,7 +58,7 @@ using namespace std;
 
 Param::Param() {
 	/***************************************** user defined design options and parameters *****************************************/
-	operationmode = 2;     		// 1: conventionalSequential (Use several multi-bit RRAM as one synapse)
+	operationmode = 1;     		// 1: conventionalSequential (Use several multi-bit RRAM as one synapse)
 								// 2: conventionalParallel (Use several multi-bit RRAM as one synapse)
 
 	memcelltype = 2;        	// 1: cell.memCellType = Type::SRAM
@@ -108,17 +108,17 @@ Param::Param() {
 	                            // true: MLSA use CSA
 								// use VSA for nvCap
 	
-	pipeline = true;            // false: layer-by-layer process --> huge leakage energy in HP
+	pipeline = false;            // false: layer-by-layer process --> huge leakage energy in HP
 								// true: pipeline process
 	speedUpDegree = 8;          // 1 = no speed up --> original speed
 								// 2 and more : speed up ratio, the higher, the faster
 								// A speed-up degree upper bound: when there is no idle period during each layer --> no need to further fold the system clock
 								// This idle period is defined by IFM sizes and data flow, the actual process latency of each layer may be different due to extra peripheries
 	
-	validated = true;			// false: no calibration factors
+	validated = false;			// false: no calibration factors
 								// true: validated by silicon data (wiring area in layout, gate switching activity, post-layout performance drop...)
 								
-	synchronous = true;			// false: asynchronous
+	synchronous = false;			// false: asynchronous
 								// true: synchronous, clkFreq will be decided by sensing delay
 								
 	/*** algorithm weight range, the default wrapper (based on WAGE) has fixed weight range of (-1, 1) ***/
@@ -209,7 +209,10 @@ Param::Param() {
 	 numColSubArray = 128;               // # of columns in single subArray
 
 	const char* env_rows = getenv("NEUROSIM_ROWS");
-    const char* env_cols = getenv("NEUROSIM_COLS");
+    const char* env_cols = getenv("NEUROSIM_COLS");	
+
+	const char* env_celltype = getenv("NEUROSIM_CELLTYPE");
+	if (env_celltype) memcelltype = atoi(env_celltype);
     
     if (env_rows) numRowSubArray = atoi(env_rows);
     if (env_cols) numColSubArray = atoi(env_cols);

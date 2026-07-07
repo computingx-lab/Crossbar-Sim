@@ -1,0 +1,36 @@
+{
+    "query": {
+        "distance": "crossbar_ip",
+        "searchScheme": "topk",
+        "parameter": 10,
+        "FuncSim": 1,
+        "PerfEval": 0,
+        "hw": {
+            "sigma_conductance": 0.05,
+            "adc_bits": 8,
+            "sigma_read": 0.0
+        }
+    },
+
+    "arch": {
+        "SubarraysPerArray": 4,
+        "ArraysPerMat": 4,
+        "MatsPerBank": 4,
+        "Merge": "topk"
+    },
+
+    "array": {
+        "row": 128,
+        "col": 128,
+        "sensing": "topk",
+        "cell": "crossbar",
+        "bit": 8
+    },
+
+    "cell": {
+        "type": "RRAM",
+        "device": "RRAM",
+        "design": "crossbar",
+        "representation": "conductance"
+    }
+}

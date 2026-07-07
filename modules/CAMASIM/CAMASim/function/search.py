@@ -1,18 +1,22 @@
 from collections import defaultdict
 
+import numpy as np
+
 from CAMASim.function.module.distance import (
+    crossbar_innerproduct_pairwise,
     euclidean_pairwise,
     hamming_pairwise,
     innerproduct_pairwise,
     manhattan_pairwise,
     rangequery_pairwise,
 )
-from CAMASim.function.module.merge import exact_merge, knn_merge, threshold_merge
+from CAMASim.function.module.merge import exact_merge, knn_merge, threshold_merge, topk_merge
 from CAMASim.function.module.sensing import (
     get_array_best_results,
     get_array_best_results_sensing,
     get_array_exact_results,
     get_array_threshold_results,
+    get_array_topk_results,
 )
 
 
@@ -24,114 +28,70 @@ class CAMSearch:
         Args:
             query_config (dict): Configuration settings for query operations.
             array_config (dict): Configuration settings for the CAM array.
-
-        Initializes variables and settings for CAM array search operations.
         """
-        self.query_config = query_config
-        self.array_config = array_config
-        self.metric = self.define_distance_metrics()
+        self.query_config  = query_config
+        self.array_config  = array_config
+        self.metric        = self.define_distance_metrics()
 
-        self.searchScheme = query_config['searchScheme']  # "exact"
-        self.searchParameter = query_config['parameter']  # 20
-        self.sensing = array_config['sensing']  # exact, best, threshold
-        self.sensinglimit = array_config.get('sensingLimit', 0)
+        self.searchScheme    = query_config['searchScheme']   # "exact" | "knn" | "topk"
+        self.searchParameter = query_config['parameter']      # k for knn/topk, threshold otherwise
+        self.sensing         = array_config['sensing']        # "exact" | "best" | "threshold" | "topk"
+        self.sensinglimit    = array_config.get('sensingLimit', 0)
+
+        # hw noise params forwarded from query_config (used by crossbar_ip metric)
+        self.hw = query_config.get('hw', {})
 
     def define_search_area(self, numRowCAMs, numColCAMs):
-        """
-        Define the search area based on the number of row and column CAMs.
-
-        Args:
-            numRowCAMs (int): Number of row-wise CAM arrays.
-            numColCAMs (int): Number of column-wise CAM arrays.
-
-        Sets the number of row and column CAMs for the search operation.
-        """
         self.numRowCAMs = numRowCAMs
         self.numColCAMs = numColCAMs
 
     def search(self, cam_data, query_data):
         """
-        Perform a search operation in CAM arrays.
+        Perform a search operation across all CAM arrays.
 
         Args:
-            cam_data (array): Data stored in the CAM arrays.
-            query_data (array): Query data for the search.
+            cam_data   : Data stored in the CAM arrays.
+            query_data : Query data.
 
         Returns:
-            results (list): List of search results.
-
-        Searches in multiple CAM arrays, merges results, and returns a list of search results.
+            results (list): List of search results per query.
         """
-        matchInd = defaultdict(list)  # Matched indices from each array
-        matchIndDist = defaultdict(list)  # Matched indices distance from each array
-        rowSize = self.array_config['row']
+        matchInd     = defaultdict(list)
+        matchIndDist = defaultdict(list)
+        rowSize      = self.array_config['row']
 
-        # 1. Search in multiple arrays
+        # 1. Search in each array
         for i in range(self.numRowCAMs):
             for j in range(self.numColCAMs):
                 indices, distances = self.array_search(cam_data[i, j], query_data[:, j])
                 for m in range(query_data.shape[0]):
                     curr_indices = [row + i * rowSize for row in indices[m]]
-                    matchInd[m] += curr_indices
-                    matchIndDist[m] += distances
+                    matchInd[m]     += curr_indices
+                    matchIndDist[m] += list(distances[m]) if hasattr(distances[m], '__iter__') else [distances[m]]
 
-        # 2. Merge results from multiple arrays
+        # 2. Merge results
         results = []
         for m in range(query_data.shape[0]):
-            Ind = matchInd[m]
-            result = self.merge_indices(Ind, matchIndDist)
+            result = self.merge_indices(matchInd[m], matchIndDist[m])
             results.append(result)
         return results
 
     def array_search(self, data, query):
-        """
-        Search operation within a single CAM array.
-
-        Args:
-            data (array): Data stored in a CAM array.
-            query (array): Query data for the search.
-
-        Returns:
-            indices (list): Matched indices.
-            distances (list): Distances to matched indices.
-
-        Calculates the distance matrix and performs search in a CAM array.
-        """
-        # The function performs a search in a CAM array.
-        # 1. Calculate the distance matrix in the array
         distance_matrix = self.array_distance(data, query)
-        # 2. Find the output IDs of the array
         indices, distances = self.array_sensing(distance_matrix)
         return indices, distances
 
     def array_distance(self, data, query):
-        """
-        Calculate the distance matrix within a CAM array.
-
-        Args:
-            data (array): Data stored in a CAM array.
-            query (array): Query data for the search.
-
-        Returns:
-            distance_matrix (array): Distance matrix within the CAM array.
-        """
         return self.metric(data, query)
 
     def array_sensing(self, distance_matrix):
         """
-        Perform sensing within a CAM array.
+        Sensing within a single array.
 
-        Args:
-            distance_matrix (array): Distance matrix within the CAM array.
-
-        Returns:
-            indices (list): Matched indices.
-            distances (list): Distances to matched indices.
-
-        Sensing operation based on the configured sensing method (exact, best, threshold).
+        For 'topk' sensing the score_matrix contains INNER PRODUCTS
+        (higher = better).  All other modes expect a distance matrix
+        (lower = better).
         """
-
-
         if self.sensing == 'exact':
             indices, distances = get_array_exact_results(distance_matrix)
         elif self.sensing == 'best':
@@ -141,22 +101,19 @@ class CAMSearch:
                 indices, distances = get_array_best_results(distance_matrix)
         elif self.sensing == 'threshold':
             indices, distances = get_array_threshold_results(distance_matrix, self.searchParameter)
+        elif self.sensing == 'topk':
+            # distance_matrix here is actually a score matrix (inner products)
+            indices, distances = get_array_topk_results(distance_matrix, self.searchParameter)
         else:
-            raise NotImplementedError
+            raise NotImplementedError(f"Unknown sensing mode: {self.sensing}")
         return indices, distances
 
     def merge_indices(self, matchInd, matchIndDist):
         """
-        Merge search results from multiple CAM arrays.
+        Merge per-array results into a single ranked list.
 
-        Args:
-            matchInd (list): List of matched indices from multiple arrays.
-            matchIndDist (list): List of distances to matched indices from multiple arrays.
-
-        Returns:
-            result (list): Merged search result.
-
-        Merges search results based on the configured search scheme (exact, knn, threshold).
+        'topk' searchScheme re-ranks by score across all row-arrays.
+        All other schemes are unchanged from the original CAMASim logic.
         """
         if self.searchScheme == 'exact':
             result = exact_merge(matchInd, self.numRowCAMs, self.numColCAMs)
@@ -164,37 +121,35 @@ class CAMSearch:
             result = knn_merge(matchInd, self.numRowCAMs, self.numColCAMs, self.searchParameter)
         elif self.searchScheme == 'threshold':
             result = threshold_merge(matchInd, self.numRowCAMs, self.numColCAMs)
+        elif self.searchScheme == 'topk':
+            result = topk_merge(matchInd, matchIndDist, self.searchParameter)
         else:
-            print("Please choose a search scheme.")
+            print("Please choose a valid search scheme.")
             raise NotImplementedError
         return result
 
     def define_distance_metrics(self):
-        """
-        Define the distance metric for search operations.
-
-        Returns:
-            metric (function): Distance metric function to be used for search.
-
-        The user can configure the distance metric for search operations. The function returns the appropriate metric function.
-        """
-        metric = self.query_config['distance']  # "hamming"
+        metric = self.query_config['distance']
 
         if not callable(metric):
             metrics = {
-                "euclidean": euclidean_pairwise,
-                "manhattan": manhattan_pairwise,
-                "hamming": hamming_pairwise,
+                "euclidean":    euclidean_pairwise,
+                "manhattan":    manhattan_pairwise,
+                "hamming":      hamming_pairwise,
                 "innerproduct": innerproduct_pairwise,
-                "rangequery": rangequery_pairwise
+                "rangequery":   rangequery_pairwise,
             }
+
+            if metric == "crossbar_ip":
+                hw = self.query_config.get('hw', {})
+                return lambda data, query: crossbar_innerproduct_pairwise(data, query, hw)
 
             metric = metrics.get(metric, euclidean_pairwise)
 
-        # Use hamming distance to define exact match (distance = 0)
         if self.query_config['searchScheme'] == 'exact':
             metric = metrics.get(metric, hamming_pairwise)
 
         if self.array_config['cell'] == "ACAM":
             metric = metrics.get(metric, rangequery_pairwise)
+
         return metric

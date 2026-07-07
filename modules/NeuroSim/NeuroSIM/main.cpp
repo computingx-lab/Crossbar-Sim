@@ -66,8 +66,110 @@ int main(int argc, char * argv[]) {
     
     gen.seed(0);
     
+    // ── CAM SubArray-only evaluation mode ─────────────────────────────────
+    if (argc >= 2 && string(argv[1]) == "--cam-subarray") {
+        if (argc < 8) {
+            cout << "Usage: ./main --cam-subarray <weightfile> <inputfile> <numRows> <numCols> <numBitInput> <numBitSynapse>" << endl;
+            return 1;
+        }
+
+        string weightfile  = argv[2];
+        string inputfile   = argv[3];
+        int    numRows     = atoi(argv[4]);
+        int    numCols     = atoi(argv[5]);
+        int    numBitInput = atoi(argv[6]);
+        int    numBitSyn   = atoi(argv[7]);
+
+        // Override params for this subarray BEFORE calling ProcessingUnitInitialize
+        param->numRowSubArray   = numRows;
+        param->numColSubArray   = numCols;
+        param->numBitInput      = numBitInput;
+        param->synapseBit       = numBitSyn;
+        param->numRowPerSynapse = 1;
+        param->numColPerSynapse = ceil((double)numBitSyn / (double)param->cellBit);
+        param->conventionalSequential = 1;
+        param->conventionalParallel   = 0;
+        param->parallelRead            = 0;
+        param->numRowParallel          = 1;
+        param->numColMuxed             = param->numColPerSynapse;
+
+        // Let NeuroSim's own init function set up tech/cell/subArray correctly
+        SubArray *subArray = nullptr;
+        ProcessingUnitInitialize(subArray, inputParameter, tech, cell, 1, 1, 1, 1);
+
+        // Load weight and input data (now safe — paths are correct, no argv[1] consumed)
+        vector<vector<double>> newMemory = LoadInWeightData(
+            weightfile, param->numRowPerSynapse, param->numColPerSynapse,
+            param->maxConductance, param->minConductance);
+        vector<vector<double>> inputVector = LoadInInputData(inputfile);
+
+        double clkPeriod = 0;
+        double totalReadLatency = 0;
+        double totalReadEnergy  = 0;
+
+        // Pass 1: determine clkPeriod (CalculateclkFreq = true)
+        for (int k = 0; k < numBitInput; k++) {
+            double activityRowRead = 0;
+            vector<double> inputVec;
+            for (int i = 0; i < (int)inputVector.size(); i++) {
+                double x = (k < (int)inputVector[i].size()) ? inputVector[i][k] : 0.0;
+                inputVec.push_back(x);
+                if (x != 0) activityRowRead += 1.0;
+            }
+            activityRowRead /= numRows;
+            subArray->activityRowRead = activityRowRead;
+
+            vector<double> colRes = GetColumnResistance(inputVec, newMemory, cell,
+                param->parallelRead, subArray->resCellAccess);
+            subArray->CalculateLatency(1e20, colRes, true);
+            if (clkPeriod < subArray->readLatency) clkPeriod = subArray->readLatency;
+        }
+        if (param->synchronous && clkPeriod > 0) param->clkFreq = 1.0 / clkPeriod;
+
+        // Pass 2: actual latency + power (CalculateclkFreq = false)
+        for (int k = 0; k < numBitInput; k++) {
+            double activityRowRead = 0;
+            vector<double> inputVec;
+            for (int i = 0; i < (int)inputVector.size(); i++) {
+                double x = (k < (int)inputVector[i].size()) ? inputVector[i][k] : 0.0;
+                inputVec.push_back(x);
+                if (x != 0) activityRowRead += 1.0;
+            }
+            activityRowRead /= numRows;
+            subArray->activityRowRead = activityRowRead;
+
+            vector<double> colRes = GetColumnResistance(inputVec, newMemory, cell,
+                param->parallelRead, subArray->resCellAccess);
+            subArray->CalculateLatency(1e20, colRes, false);
+            subArray->CalculatePower(colRes);
+            totalReadLatency += subArray->readLatency;
+            totalReadEnergy  += subArray->readDynamicEnergy;
+        }
+
+        double subarrayArea  = subArray->area;
+        double leakagePower  = subArray->leakage;
+
+        cout << "\n─── CAM SubArray Hardware Evaluation ───────────────────" << endl;
+        cout << "SubArray size        : " << numRows << " x " << numCols << endl;
+        cout << "SubArray area        : " << subarrayArea * 1e12 << " um^2" << endl;
+        cout << "Read latency (total) : " << totalReadLatency * 1e9 << " ns" << endl;
+        cout << "Read energy  (total) : " << totalReadEnergy  * 1e12 << " pJ" << endl;
+        cout << "Leakage power        : " << leakagePower * 1e6 << " uW" << endl;
+        cout << "──────────────────────────────────────────────────────────" << endl;
+
+        cout << "SYS_METRIC|AREA|"    << subarrayArea    << endl;
+        cout << "SYS_METRIC|LATENCY|" << totalReadLatency << endl;
+        cout << "SYS_METRIC|ENERGY|"  << totalReadEnergy  << endl;
+
+        return 0;
+    }
+    // ── End CAM SubArray-only evaluation mode ──────────────────────────────
+
+
+
     vector<vector<double> > netStructure;
     netStructure = getNetStructure(argv[1]);
+    
     
     // define weight/input/memory precision from wrapper
     param->synapseBit = atoi(argv[2]);              // precision of synapse weight
@@ -160,11 +262,31 @@ int main(int argc, char * argv[]) {
     }
 
     double maxPESizeNM, maxTileSizeCM, numPENM;
+
+    maxPESizeNM = 0;
+    maxTileSizeCM = 0;
+    numPENM = 0;
+
     vector<int> markNM;
     vector<int> pipelineSpeedUp;
     markNM = ChipDesignInitialize(inputParameter, tech, cell, false, netStructure, &maxPESizeNM, &maxTileSizeCM, &numPENM);
-    pipelineSpeedUp = ChipDesignInitialize(inputParameter, tech, cell, true, netStructure, &maxPESizeNM, &maxTileSizeCM, &numPENM);
+    pipelineSpeedUp = ChipDesignInitialize(inputParameter, tech, cell, false, netStructure, &maxPESizeNM, &maxTileSizeCM, &numPENM);
     
+    if (maxPESizeNM == 0 || maxTileSizeCM == 0) {
+    cout << "\n[WARNING] ChipDesignInitialize skipped constraint optimization (common for single-layer workloads)." << endl;
+
+    // Floor to minimum viable hierarchy values based on subarray size
+    if (maxPESizeNM < 2 * param->numRowSubArray) {
+        maxPESizeNM = 2 * param->numRowSubArray;   // minimum 2 subarrays per PE
+    }
+    if (maxTileSizeCM < 4 * param->numRowSubArray) {
+        maxTileSizeCM = 4 * param->numRowSubArray; // minimum 4 subarrays per tile
+    }
+
+    cout << "[INFO] Applied default hardware structural constraints: maxPESizeNM = " 
+         << maxPESizeNM << ", maxTileSizeCM = " << maxTileSizeCM << "\n" << endl;
+    }
+
     double desiredNumTileNM, desiredPESizeNM, desiredNumTileCM, desiredTileSizeCM, desiredPESizeCM;
     int numTileRow, numTileCol;
     
@@ -296,7 +418,7 @@ int main(int argc, char * argv[]) {
         // calculate clkFreq
         for (int i=0; i<netStructure.size(); i++) {     
             // Anni update: add &tileLeakageSRAMInUse
-            ChipCalculatePerformance(inputParameter, tech, cell, i, argv[2*i+6], argv[2*i+6], argv[2*i+7], netStructure[i][6],
+            ChipCalculatePerformance(inputParameter, tech, cell, i, argv[2*i+6], argv[2*i+7], argv[2*i+8], netStructure[i][6],
                         netStructure, markNM, numTileEachLayer, utilizationEachLayer, speedUpEachLayer, tileLocaEachLayer,
                         numPENM, desiredPESizeNM, desiredTileSizeCM, desiredPESizeCM, CMTileheight, CMTilewidth, NMTileheight, NMTilewidth,
                         &layerReadLatency, &layerReadDynamicEnergy, &tileLeakage, &tileLeakageSRAMInUse, &layerbufferLatency, &layerbufferDynamicEnergy, &layericLatency, &layericDynamicEnergy,
@@ -318,7 +440,7 @@ int main(int argc, char * argv[]) {
         for (int i=0; i<netStructure.size(); i++) {
             cout << "-------------------- Estimation of Layer " << i+1 << " ----------------------" << endl;
             // Anni update: add &tileLeakageSRAMInUse
-            ChipCalculatePerformance(inputParameter, tech, cell, i, argv[2*i+6], argv[2*i+6], argv[2*i+7], netStructure[i][6],
+            ChipCalculatePerformance(inputParameter, tech, cell, i, argv[2*i+6], argv[2*i+7], argv[2*i+8], netStructure[i][6],
                         netStructure, markNM, numTileEachLayer, utilizationEachLayer, speedUpEachLayer, tileLocaEachLayer,
                         numPENM, desiredPESizeNM, desiredTileSizeCM, desiredPESizeCM, CMTileheight, CMTilewidth, NMTileheight, NMTilewidth,
                         &layerReadLatency, &layerReadDynamicEnergy, &tileLeakage, &tileLeakageSRAMInUse, &layerbufferLatency, &layerbufferDynamicEnergy, &layericLatency, &layericDynamicEnergy,
@@ -403,7 +525,7 @@ int main(int argc, char * argv[]) {
         
         for (int i=0; i<netStructure.size(); i++) {
             // Anni update: add &tileLeakageSRAMInUse
-            ChipCalculatePerformance(inputParameter, tech, cell, i, argv[2*i+6], argv[2*i+6], argv[2*i+7], netStructure[i][6],
+            ChipCalculatePerformance(inputParameter, tech, cell, i, argv[2*i+6], argv[2*i+7], argv[2*i+8], netStructure[i][6],
                         netStructure, markNM, numTileEachLayer, utilizationEachLayer, speedUpEachLayer, tileLocaEachLayer,
                         numPENM, desiredPESizeNM, desiredTileSizeCM, desiredPESizeCM, CMTileheight, CMTilewidth, NMTileheight, NMTilewidth,
                         &layerReadLatency, &layerReadDynamicEnergy, &tileLeakage, &tileLeakageSRAMInUse, &layerbufferLatency, &layerbufferDynamicEnergy, &layericLatency, &layericDynamicEnergy,
