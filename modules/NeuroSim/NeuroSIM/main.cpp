@@ -55,6 +55,7 @@
 #include "ProcessingUnit.h"
 #include "SubArray.h"
 #include "Comparator.h"
+#include "Adder.h"
 #include "Definition.h"
 
 using namespace std;
@@ -229,6 +230,62 @@ int main(int argc, char * argv[]) {
         return 0;
     }
     // End Comparator cost evaluation mode
+
+
+    // Adder (partial-sum merge) cost evaluation mode
+    // Reports the area / latency / energy of ONE addition using NeuroSim's
+    // own Adder block. PerfEval Part 1 uses this to cost recombining partial
+    // dot products when the embedding dimension is split across arrays
+    // (dim > array rows), i.e. the 'merge the pieces back together' step.
+    //
+    // Usage: ./main --adder-cost <numBit>
+    //   numBit = width of the partial sums being added (e.g. ADC output bits).
+    if (argc >= 2 && string(argv[1]) == "--adder-cost") {
+        int numBit = (argc >= 3) ? atoi(argv[2]) : 8;   // width of partial sums
+        if (numBit < 1) numBit = 1;
+
+        // Initialize tech/cell the same proven way the other modes do.
+        param->numRowSubArray        = 128;
+        param->numColSubArray        = 128;
+        param->numBitInput           = numBit;
+        param->synapseBit            = 1;
+        param->numRowPerSynapse      = 1;
+        param->numColPerSynapse      = 1;
+        param->conventionalSequential = 1;
+        param->conventionalParallel   = 0;
+        param->parallelRead           = 0;
+        param->numRowParallel         = 1;
+        param->numColMuxed            = 1;
+
+        SubArray *subArray = nullptr;
+        ProcessingUnitInitialize(subArray, inputParameter, tech, cell, 1, 1, 1, 1);
+
+        // Build a single numBit-wide adder on NeuroSim's Adder block.
+        // Call order matters: CalculateArea() computes both the area AND the
+        // gate capacitances that CalculateLatency()/CalculatePower() rely on.
+        Adder adder(inputParameter, tech, cell);
+        adder.Initialize(numBit, 1, param->clkFreq);   // numBit-wide, one adder
+        adder.CalculateArea(0, 0, NONE);               // sets area + caps
+        adder.CalculateLatency(1e20, 0, 1);            // one addition, unloaded
+        adder.CalculatePower(1, 1);                    // one addition
+
+        double addArea    = adder.area;             // m^2 per adder
+        double addLatency = adder.readLatency;      // s per addition
+        double addEnergy  = adder.readDynamicEnergy;// J per addition
+
+        cout << "\nAdder (partial-sum merge) Cost Evaluation" << endl;
+        cout << "Adder bits            : " << numBit << endl;
+        cout << "Area   (per unit)     : " << addArea    * 1e12 << " um^2" << endl;
+        cout << "Latency(per add)      : " << addLatency * 1e9  << " ns"  << endl;
+        cout << "Energy (per add)      : " << addEnergy  * 1e12 << " pJ"  << endl;
+
+        cout << "ADD_METRIC|AREA|"    << addArea    << endl;
+        cout << "ADD_METRIC|LATENCY|" << addLatency << endl;
+        cout << "ADD_METRIC|ENERGY|"  << addEnergy  << endl;
+
+        return 0;
+    }
+    // End Adder cost evaluation mode
 
 
 

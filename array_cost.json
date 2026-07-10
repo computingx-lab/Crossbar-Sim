@@ -19,5 +19,12 @@
     "energy_per_comparison_j": 2.75836e-14,
     "num_bit": 4,
     "source": "NeuroSim --comparator-cost"
+  },
+  "adder_cost": {
+    "area_per_adder_m2": 5.56174e-12,
+    "latency_per_add_s": 2.38945e-10,
+    "energy_per_add_j": 2.88323e-14,
+    "num_bit": 4,
+    "source": "NeuroSim --adder-cost"
   }
 }

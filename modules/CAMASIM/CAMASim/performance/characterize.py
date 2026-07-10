@@ -145,6 +145,39 @@ def run_comparator_cost(binary: str, neurosim_dir: str, num_bit: int,
     }
 
 
+def run_adder_cost(binary: str, neurosim_dir: str, num_bit: int,
+                   verbose: bool = True, env: dict | None = None) -> dict | None:
+    """Run the --adder-cost mode; return per-addition area/latency/energy.
+
+    Used to cost the partial-sum recombination when the embedding dimension is
+    split across arrays (dim > array rows). Returns None (with a warning) if the
+    mode fails, so an old binary doesn't block the rest of characterisation.
+    """
+    cmd = [binary, "--adder-cost", str(num_bit)]
+    if verbose:
+        print(f"[characterize] running: {' '.join(cmd)}")
+    try:
+        result = subprocess.run(cmd, cwd=neurosim_dir, capture_output=True,
+                                text=True, check=True, env=env)
+    except subprocess.CalledProcessError as e:
+        msg = (e.stderr or e.stdout or "").strip()
+        print(f"[characterize] WARNING: --adder-cost failed ({e.returncode}): {msg}")
+        print("[characterize] (rebuild NeuroSim so the binary includes the new mode)")
+        return None
+    m = _parse_metric_lines(result.stdout, "ADD_METRIC")
+    if not {"AREA", "LATENCY", "ENERGY"} <= set(m):
+        print("[characterize] WARNING: could not parse ADD_METRIC lines; "
+              "adder cost omitted.")
+        return None
+    return {
+        "area_per_adder_m2": m["AREA"],
+        "latency_per_add_s": m["LATENCY"],
+        "energy_per_add_j": m["ENERGY"],
+        "num_bit": num_bit,
+        "source": "NeuroSim --adder-cost",
+    }
+
+
 def _write_representative_csvs(rows: int, cols: int, input_bits: int, tmpdir: str):
     """Generate representative weight/input CSVs to exercise one array.
 
@@ -234,6 +267,10 @@ def characterize(config_path: str, output_path: str | None = None, verbose: bool
     # ADC-quantised, so the comparator precision follows adc_bits (defined above).
     comparator_cost = run_comparator_cost(binary, neurosim_dir, adc_bits,
                                           verbose=verbose, env=env)
+    # Part 1 extra: cost of ONE addition, for recombining dim-split partial sums.
+    # The partial sums are ADC outputs, so the adder width follows adc_bits.
+    adder_cost = run_adder_cost(binary, neurosim_dir, adc_bits,
+                                verbose=verbose, env=env)
 
     cost = {
         "area_per_array_m2": area,
@@ -244,6 +281,8 @@ def characterize(config_path: str, output_path: str | None = None, verbose: bool
     }
     if comparator_cost is not None:
         cost["comparator_cost"] = comparator_cost
+    if adder_cost is not None:
+        cost["adder_cost"] = adder_cost
 
     if output_path is None:
         output_path = os.path.join(os.path.dirname(os.path.abspath(config_path)), "array_cost.json")
@@ -260,6 +299,11 @@ def characterize(config_path: str, output_path: str | None = None, verbose: bool
             print(f"    area    = {comparator_cost['area_per_comparator_m2']:.4e} m^2")
             print(f"    latency = {comparator_cost['latency_per_comparison_s']:.4e} s / compare")
             print(f"    energy  = {comparator_cost['energy_per_comparison_j']:.4e} J / compare")
+        if adder_cost is not None:
+            print(f"[characterize] per-addition cost ({adc_bits}-bit):")
+            print(f"    area    = {adder_cost['area_per_adder_m2']:.4e} m^2")
+            print(f"    latency = {adder_cost['latency_per_add_s']:.4e} s / add")
+            print(f"    energy  = {adder_cost['energy_per_add_j']:.4e} J / add")
         print(f"[characterize] wrote {output_path}")
 
     return cost
