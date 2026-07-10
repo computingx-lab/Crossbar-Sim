@@ -1,0 +1,23 @@
+{
+  "area_per_array_m2": 2.77557e-08,
+  "latency_per_mvm_s": 2.57581e-07,
+  "energy_per_mvm_j": 8.60523e-10,
+  "source": "NeuroSim --cam-subarray",
+  "hardware": {
+    "array": {
+      "rows": 512,
+      "cols": 512
+    },
+    "device": "FeFET",
+    "cell_bits": 2,
+    "adc_bits": 4,
+    "input_bits": 8
+  },
+  "comparator_cost": {
+    "area_per_comparator_m2": 6.59169e-12,
+    "latency_per_comparison_s": 1.2381e-10,
+    "energy_per_comparison_j": 2.75836e-14,
+    "num_bit": 4,
+    "source": "NeuroSim --comparator-cost"
+  }
+}

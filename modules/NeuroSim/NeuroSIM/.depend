@@ -117,4 +117,4 @@ main.o: main.cpp constant.h formula.h Technology.h typedef.h Param.h \
  DeMux.h Precharger.h SenseAmp.h DecoderDriver.h SRAMWriteDriver.h \
  ReadCircuit.h SwitchMatrix.h ShiftAdd.h WLNewDecoderDriver.h \
  NewSwitchMatrix.h CurrentSenseAmp.h MultilevelSenseAmp.h \
- MultilevelSAEncoder.h SarADC.h LevelShifter.h Definition.h
+ MultilevelSAEncoder.h SarADC.h LevelShifter.h Comparator.h Definition.h

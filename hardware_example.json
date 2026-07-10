@@ -1,0 +1,7 @@
+{
+  "array":      { "rows": 512, "cols": 512 },
+  "device":     "FeFET",
+  "cell_bits":  2,
+  "adc_bits":   4,
+  "input_bits": 8
+}

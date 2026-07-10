@@ -1,5 +1,5 @@
 import sys
-sys.path.insert(0, "/home/charlie_power/CAMASim-Hybrid/modules/CAMASIM")
+sys.path.insert(0, "/mnt/c/Users/Charlie Power/CAMASim-Hybrid/modules/CAMASIM")
 
 import numpy as np
 import matplotlib

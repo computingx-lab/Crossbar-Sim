@@ -41,6 +41,52 @@ class CAMSearch:
         # hw noise params forwarded from query_config (used by crossbar_ip metric)
         self.hw = query_config.get('hw', {})
 
+        # Optional PerfEval top-k cost accounting (Part 2). Off unless
+        # query_config['perfeval'] is provided, e.g.:
+        #   {"comparator_cost": {...}, "model": "linear", "num_comparators": 1}
+        # When on, the top-k hardware cost is accumulated at the sensing and
+        # merge stages during a real search -- the in-loop counterpart to
+        # perfeval.py, hooked exactly where partial results are pooled/picked.
+        self.perfeval = query_config.get('perfeval', None)
+        self._pe_topk_comparisons = None
+        if self.perfeval is not None:
+            from CAMASim.performance.topk_cost import topk_comparisons as _tc
+            self._pe_topk_comparisons = _tc
+        self._reset_perfeval()
+
+    def _reset_perfeval(self):
+        """Zero the top-k cost accumulators (called at the start of each search)."""
+        self._pe_sensing_cmp = 0
+        self._pe_merge_cmp = 0
+
+    def get_perfeval_report(self):
+        """Finalize the top-k cost accumulated during the last search().
+
+        Returns None if PerfEval accounting was not enabled. Otherwise a dict
+        with the comparison counts -- split into the size-dependent per-array
+        'sensing' selection and the cross-array 'merge' re-rank -- and the
+        aggregated hardware cost using the comparator_cost from
+        query_config['perfeval'].
+        """
+        if self.perfeval is None:
+            return None
+        import math as _math
+        cc = self.perfeval["comparator_cost"]
+        a = float(cc["area_per_comparator_m2"])
+        l = float(cc["latency_per_comparison_s"])
+        e = float(cc["energy_per_comparison_j"])
+        num_comp = int(self.perfeval.get("num_comparators", 1))
+        total_cmp = self._pe_sensing_cmp + self._pe_merge_cmp
+        return {
+            "sensing_comparisons": self._pe_sensing_cmp,
+            "merge_comparisons": self._pe_merge_cmp,
+            "topk_comparisons_total": total_cmp,
+            "topk_energy_j": e * total_cmp,
+            "topk_latency_s": (_math.ceil(total_cmp / num_comp) * l) if total_cmp else 0.0,
+            "topk_area_m2": a * num_comp,
+            "num_comparators": num_comp,
+        }
+
     def define_search_area(self, numRowCAMs, numColCAMs):
         self.numRowCAMs = numRowCAMs
         self.numColCAMs = numColCAMs
@@ -56,6 +102,8 @@ class CAMSearch:
         Returns:
             results (list): List of search results per query.
         """
+        if self.perfeval is not None:
+            self._reset_perfeval()
         matchInd     = defaultdict(list)
         matchIndDist = defaultdict(list)
         rowSize      = self.array_config['row']
@@ -104,6 +152,15 @@ class CAMSearch:
         elif self.sensing == 'topk':
             # distance_matrix here is actually a score matrix (inner products)
             indices, distances = get_array_topk_results(distance_matrix, self.searchParameter)
+            if self._pe_topk_comparisons is not None:
+                # Local per-array top-k selects k out of this array's candidates
+                # for every query. Summed over all arrays this is ~k*n_docs --
+                # the size-dependent cost that grows with the database.
+                sm = np.asarray(distance_matrix)
+                n_cand = sm.shape[1] if sm.ndim > 1 else sm.shape[0]
+                n_q = sm.shape[0] if sm.ndim > 1 else 1
+                self._pe_sensing_cmp += self._pe_topk_comparisons(
+                    int(n_cand), int(self.searchParameter)) * int(n_q)
         else:
             raise NotImplementedError(f"Unknown sensing mode: {self.sensing}")
         return indices, distances
@@ -123,6 +180,13 @@ class CAMSearch:
             result = threshold_merge(matchInd, self.numRowCAMs, self.numColCAMs)
         elif self.searchScheme == 'topk':
             result = topk_merge(matchInd, matchIndDist, self.searchParameter)
+            if self._pe_topk_comparisons is not None:
+                # Cross-array merge re-ranks the pooled candidates for this query
+                # -- the exact spot the draft describes hooking the top-k in.
+                n_pool = len(matchInd)
+                if n_pool > 0:
+                    self._pe_merge_cmp += self._pe_topk_comparisons(
+                        int(n_pool), int(self.searchParameter))
         else:
             print("Please choose a valid search scheme.")
             raise NotImplementedError

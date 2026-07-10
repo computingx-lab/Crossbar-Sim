@@ -54,6 +54,7 @@
 #include "Chip.h"
 #include "ProcessingUnit.h"
 #include "SubArray.h"
+#include "Comparator.h"
 #include "Definition.h"
 
 using namespace std;
@@ -69,7 +70,7 @@ int main(int argc, char * argv[]) {
     // ── CAM SubArray-only evaluation mode ─────────────────────────────────
     if (argc >= 2 && string(argv[1]) == "--cam-subarray") {
         if (argc < 8) {
-            cout << "Usage: ./main --cam-subarray <weightfile> <inputfile> <numRows> <numCols> <numBitInput> <numBitSynapse>" << endl;
+            cout << "Usage: ./main --cam-subarray <weightfile> <inputfile> <numRows> <numCols> <numBitInput> <numBitSynapse> [adcBits]" << endl;
             return 1;
         }
 
@@ -79,6 +80,7 @@ int main(int argc, char * argv[]) {
         int    numCols     = atoi(argv[5]);
         int    numBitInput = atoi(argv[6]);
         int    numBitSyn   = atoi(argv[7]);
+        int    adcBits     = (argc >= 9) ? atoi(argv[8]) : 0;   // optional ADC precision (levelOutput = 2^adcBits)
 
         // Override params for this subarray BEFORE calling ProcessingUnitInitialize
         param->numRowSubArray   = numRows;
@@ -87,11 +89,16 @@ int main(int argc, char * argv[]) {
         param->synapseBit       = numBitSyn;
         param->numRowPerSynapse = 1;
         param->numColPerSynapse = ceil((double)numBitSyn / (double)param->cellBit);
-        param->conventionalSequential = 1;
-        param->conventionalParallel   = 0;
-        param->parallelRead            = 0;
-        param->numRowParallel          = 1;
-        param->numColMuxed             = param->numColPerSynapse;
+        // Parallel (analog) read: the whole column current is summed in one
+        // shot and digitized by the multilevel ADC -- the physically correct
+        // model for an analog crossbar MVM / inner-product, and the mode where
+        // ADC precision (levelOutput = 2^adcBits) actually affects the cost.
+        param->conventionalSequential = 0;
+        param->conventionalParallel   = 1;
+        param->parallelRead           = 1;
+        param->numRowParallel         = numRows;   // all rows summed together
+        param->numColMuxed            = 8;         // columns per ADC (NeuroSim parallel default)
+        if (adcBits > 0) param->levelOutput = (int)pow(2, adcBits);  // ADC levels = 2^adc_bits
 
         // Let NeuroSim's own init function set up tech/cell/subArray correctly
         SubArray *subArray = nullptr;
@@ -164,6 +171,64 @@ int main(int argc, char * argv[]) {
         return 0;
     }
     // ── End CAM SubArray-only evaluation mode ──────────────────────────────
+
+    // Comparator (top-k) cost evaluation mode
+    // Reports the area / latency / energy of ONE comparison using NeuroSim's
+    // own Comparator building block. PerfEval Part 2 (topk_cost.py) multiplies
+    // this per-comparison cost by the number of comparisons a top-k selection
+    // performs (~k*N), which is how the top-k cost grows with database size.
+    //
+    // Usage: ./main --comparator-cost <numBit>
+    //   numBit = precision of the compared scores (e.g. ADC output bits).
+    if (argc >= 2 && string(argv[1]) == "--comparator-cost") {
+        int numBit = (argc >= 3) ? atoi(argv[2]) : 8;   // score precision
+        if (numBit < 2) numBit = 2;   // Comparator latency model assumes >= 2 bits
+
+        // Initialize tech/cell the same proven way the subarray mode does, so
+        // the Technology the Comparator reads is fully set up. The comparator's
+        // per-unit cost does not depend on array size, so defaults are fine.
+        param->numRowSubArray        = 128;
+        param->numColSubArray        = 128;
+        param->numBitInput           = numBit;
+        param->synapseBit            = 1;
+        param->numRowPerSynapse      = 1;
+        param->numColPerSynapse      = 1;
+        param->conventionalSequential = 1;
+        param->conventionalParallel   = 0;
+        param->parallelRead           = 0;
+        param->numRowParallel         = 1;
+        param->numColMuxed            = 1;
+
+        SubArray *subArray = nullptr;
+        ProcessingUnitInitialize(subArray, inputParameter, tech, cell, 1, 1, 1, 1);
+
+        // Build a single numBit-wide comparator on NeuroSim's Comparator block.
+        // Call order matters: CalculateUnitArea() computes both the area AND the
+        // internal gate capacitances that CalculateLatency()/CalculatePower()
+        // then rely on, so it must run first (see Comparator.cpp).
+        Comparator comparator(inputParameter, tech, cell);
+        comparator.Initialize(numBit, 1);              // numBit-wide, one unit
+        comparator.CalculateUnitArea(NONE);            // sets areaUnit + caps
+        comparator.CalculateLatency(1e20, 0, 1);       // one comparison, unloaded
+        comparator.CalculatePower(1, 1);               // one comparison
+
+        double cmpArea    = comparator.areaUnit;             // m^2 per comparator
+        double cmpLatency = comparator.readLatency;          // s per comparison
+        double cmpEnergy  = comparator.readDynamicEnergy;    // J per comparison
+
+        cout << "\nComparator (top-k) Cost Evaluation" << endl;
+        cout << "Comparator bits       : " << numBit << endl;
+        cout << "Area   (per unit)     : " << cmpArea    * 1e12 << " um^2" << endl;
+        cout << "Latency(per compare)  : " << cmpLatency * 1e9  << " ns"  << endl;
+        cout << "Energy (per compare)  : " << cmpEnergy  * 1e12 << " pJ"  << endl;
+
+        cout << "CMP_METRIC|AREA|"    << cmpArea    << endl;
+        cout << "CMP_METRIC|LATENCY|" << cmpLatency << endl;
+        cout << "CMP_METRIC|ENERGY|"  << cmpEnergy  << endl;
+
+        return 0;
+    }
+    // End Comparator cost evaluation mode
 
 
 
