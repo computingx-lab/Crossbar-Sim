@@ -2,3 +2,6 @@ venv/
 __pycache__/
 *.pyc
 *.o
+
+# local tests / sanity checks — kept locally, not pushed to GitHub
+test_*.py
