@@ -42,7 +42,7 @@ def threshold_merge(matchInd, rowCams, colCams):
 # Top-k score merge  (Phase 1 — crossbar retrieval)
 # ─────────────────────────────────────────────────────────────────────────────
 
-def topk_merge(cand_indices, cand_scores, k):
+def topk_merge(cand_indices, cand_scores, k, sigma_compare=0.0, rng=None):
     """
     Pool local top-k candidates from all row-arrays and re-rank by score to
     produce the global top-k.
@@ -74,5 +74,13 @@ def topk_merge(cand_indices, cand_scores, k):
     cand_scores  = np.asarray(cand_scores,  dtype=float)
 
     kk    = min(k, len(cand_indices))
-    order = np.argsort(cand_scores)[::-1][:kk]   # largest score first
+    # Compare-side noise at the MERGE: the global re-rank is ordered by a noisy
+    # key (score + fresh comparator noise), so near-ties among the pooled
+    # candidates can flip here too. sigma_compare = 0 -> exact (unchanged).
+    _rng = rng if rng is not None else np.random
+    if sigma_compare > 0:
+        key = cand_scores + _rng.normal(0.0, sigma_compare, size=cand_scores.shape)
+    else:
+        key = cand_scores
+    order = np.argsort(key)[::-1][:kk]   # largest (noisy) score first
     return cand_indices[order]

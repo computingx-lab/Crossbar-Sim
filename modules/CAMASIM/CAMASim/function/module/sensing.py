@@ -69,7 +69,7 @@ def get_array_threshold_results(distance_matrix, threshold):
 # Top-k sensing  (Phase 1 — crossbar retrieval)
 # ─────────────────────────────────────────────────────────────────────────────
 
-def get_array_topk_results(score_matrix, k):
+def get_array_topk_results(score_matrix, k, sigma_compare=0.0, rng=None):
     """
     For each query, return the indices of the k docs with the LARGEST scores.
 
@@ -91,14 +91,23 @@ def get_array_topk_results(score_matrix, k):
     indices   = []
     distances = []
     kk = min(k, score_matrix.shape[1])
+    _rng = rng if rng is not None else np.random
 
     for i in range(score_matrix.shape[0]):
         row  = score_matrix[i]
+        # Comparator (compare-side) noise: the selection is ordered by a noisy
+        # key (row + fresh comparator noise), so near-ties can flip -- but the
+        # scores we REPORT are the true sensed scores of whatever got selected.
+        # sigma_compare = 0 -> exact selection (unchanged behaviour).
+        if sigma_compare > 0:
+            key = row + _rng.normal(0.0, sigma_compare, size=row.shape)
+        else:
+            key = row
         # argpartition gives the kk largest indices (unordered) cheaply
-        part  = np.argpartition(row, -kk)[-kk:]
+        part  = np.argpartition(key, -kk)[-kk:]
         # sort those kk candidates so the best (largest) comes first
-        order = part[np.argsort(row[part])[::-1]]
+        order = part[np.argsort(key[part])[::-1]]
         indices.append(order)
-        distances.append(row[order])
+        distances.append(row[order])   # TRUE scores of the selected docs
 
     return indices, distances

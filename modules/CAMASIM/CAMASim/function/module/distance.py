@@ -144,6 +144,71 @@ def quantize_adc(x, bits):
 # TODO: IR drop along bitlines/wordlines not modelled (Phase 1 assumption)
 # TODO: column-splitting for embeddings wider than one array not modelled (Phase 1 assumption)
 
+def make_level_profile(bits, g_min=-1.0, g_max=1.0, sigma_low=0.01, sigma_high=0.03,
+                       level_conductances=None, level_sigmas=None):
+    """Build (conductances, sigmas) for a 2**bits-level cell.
+
+    Level-based model: 2**bits discrete conductance levels, each with its OWN
+    target conductance and its OWN write-noise sigma. Everything is a parameter
+    (never hard-coded), so measured device values can replace these later.
+
+    Defaults (used only when explicit lists are not supplied):
+      * conductances : spread evenly across [g_min, g_max]
+      * sigmas       : grow linearly from sigma_low (level 0) to sigma_high
+                       (top level), since higher levels usually drift more
+    """
+    n = 2 ** int(bits)
+    g = np.asarray(level_conductances, dtype=float) if level_conductances is not None \
+        else np.linspace(g_min, g_max, n)
+    s = np.asarray(level_sigmas, dtype=float) if level_sigmas is not None \
+        else np.linspace(sigma_low, sigma_high, n)
+    if len(g) != n or len(s) != n:
+        raise ValueError(f"expected {n} levels (bits={bits}); got "
+                         f"{len(g)} conductances / {len(s)} sigmas")
+    return g, s
+
+
+def quantize_to_levels(x, level_conductances):
+    """Snap each value in x to the nearest level; return (indices, snapped).
+
+    Works for arbitrary (even non-uniform) level spacing. This is the
+    quantization half of the level-based write model.
+    """
+    g = np.asarray(level_conductances, dtype=float)
+    idx = np.abs(np.asarray(x, dtype=float)[..., None] - g).argmin(axis=-1)
+    return idx, g[idx]
+
+
+def apply_level_based_noise(docs, hw):
+    """Level-based WRITE noise (Point 1): quantize each stored value to the
+    nearest level, then add that level's OWN sigma. Captures both the
+    quantization error and the level-specific device variation in one move.
+
+    hw keys (all optional, all parameters):
+      level_bits            int   bits per cell -> 2**bits levels (default 2)
+      level_g_min/g_max     float conductance range to spread levels over
+                                  (default: the data's own min/max)
+      level_sigma_low/high  float end sigmas for the default growing ramp
+      level_conductances    list  explicit per-level conductances (overrides)
+      level_sigmas          list  explicit per-level sigmas (overrides)
+    """
+    docs = np.asarray(docs, dtype=float)
+    bits = int(hw.get("level_bits", 2))
+    g, sig = make_level_profile(
+        bits,
+        g_min=hw.get("level_g_min", float(docs.min())),
+        g_max=hw.get("level_g_max", float(docs.max())),
+        sigma_low=hw.get("level_sigma_low", 0.01),
+        sigma_high=hw.get("level_sigma_high", 0.03),
+        level_conductances=hw.get("level_conductances"),
+        level_sigmas=hw.get("level_sigmas"),
+    )
+    idx, snapped = quantize_to_levels(docs, g)
+    per_value_sigma = sig[idx]                       # each cell gets its level's sigma
+    noise = np.random.normal(0.0, 1.0, size=docs.shape) * per_value_sigma
+    return snapped + noise
+
+
 def crossbar_innerproduct_pairwise(docs, queries, hw):
     """
     Computes inner products the way an analog crossbar does, with hardware noise.
@@ -170,13 +235,24 @@ def crossbar_innerproduct_pairwise(docs, queries, hw):
     -------
     scores : (num_queries, num_docs)  — NOISY inner products, higher = more similar
     """
-    # 1. Program docs as conductances with device variation (applied once)
-    sigma_g = hw.get("sigma_conductance", 0.0)
-    if sigma_g > 0:
-        noise     = np.random.normal(0.0, sigma_g, size=docs.shape)
-        docs_noisy = docs * (1.0 + noise)   # multiplicative: scales with value
+    # 1. Program docs as conductances with WRITE-side device variation.
+    #    Point 1 in the noise model: static -- written once and frozen, so every
+    #    query in this call sees the same fixed error. Two switchable models via
+    #    hw["noise_type"]: "gaussian" (one global sigma) or "level_based"
+    #    (2**bits discrete levels, each with its own conductance and sigma).
+    noise_type = hw.get("noise_type", "gaussian")
+    if noise_type == "level_based":
+        docs_noisy = apply_level_based_noise(docs, hw)
+    elif noise_type == "gaussian":
+        sigma_g = hw.get("sigma_conductance", 0.0)
+        if sigma_g > 0:
+            noise     = np.random.normal(0.0, sigma_g, size=docs.shape)
+            docs_noisy = docs * (1.0 + noise)   # multiplicative: scales with value
+        else:
+            docs_noisy = docs
     else:
-        docs_noisy = docs
+        raise ValueError(f"unknown noise_type '{noise_type}' "
+                         "(choose 'gaussian' or 'level_based')")
 
     # 2. Analog matrix-vector multiply — one matmul, no loops
     scores = queries @ docs_noisy.T          # (num_queries, num_docs)

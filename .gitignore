@@ -5,3 +5,8 @@ __pycache__/
 
 # local tests / sanity checks — kept locally, not pushed to GitHub
 test_*.py
+
+# embedding cache + generated artifacts (regenerable, not source)
+embcache/
+*.npz
+array_cost.json
