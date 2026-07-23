@@ -67,7 +67,8 @@ class UnifiedResult:
     n_queries: int
     k: int
     noise_type: str
-    num_doc_arrays: int          # how many arrays the docs were tiled across
+    num_doc_arrays: int          # arrays the docs were tiled across (columns)
+    num_dim_arrays: int          # arrays one dot product was split across (rows)
 
     perfeval: dict = field(default_factory=dict)
 
@@ -93,23 +94,50 @@ def _load_array_cost(hardware):
     raise ValueError("config['hardware'] must be an array_cost dict or a path to array_cost.json")
 
 
-def _run_functional(docs, queries, k, noise, array_cols):
+def _array_scores(docs, queries, noise, array_rows):
+    """Noisy scores for one document tile, splitting the embedding DIMENSION
+    across arrays when dim > array_rows.
+
+    Each dim-slice is a separate physical array: its PARTIAL dot product is
+    ADC-quantized and read-noised inside crossbar_innerproduct_pairwise, and the
+    partials are then summed -- the same recombination the cost side (perfeval)
+    charges an adder for. When dim <= array_rows this is a single array and the
+    behaviour is byte-identical to calling the crossbar once.
+    """
+    dim = docs.shape[1]
+    if not array_rows or array_rows <= 0 or dim <= array_rows:
+        return crossbar_innerproduct_pairwise(docs, queries, noise)
+    scores = None
+    for s in range(0, dim, array_rows):
+        e = min(dim, s + array_rows)
+        # slice BOTH docs and queries to the same dim window -> partial dot product,
+        # ADC-quantized + read-noised by the crossbar for this one array
+        partial = crossbar_innerproduct_pairwise(docs[:, s:e], queries[:, s:e], noise)
+        scores = partial if scores is None else scores + partial
+    return scores
+
+
+def _run_functional(docs, queries, k, noise, array_cols, array_rows):
     """Noisy retrieval -> predicted top-k indices per query.
 
-    One array if docs fit (n_docs <= array_cols); otherwise tile docs across
-    arrays with per-array fresh read noise, noisy local top-k, and a noisy merge.
-    Returns (pred_list, num_tiles).
+    Tiling mirrors the hardware: documents are split across arrays when
+    n_docs > array_cols (doc tiling), and the embedding dimension is split when
+    dim > array_rows (dim tiling, via _array_scores). Read noise is fresh per
+    array; the local top-k and cross-array merge carry comparator noise.
+    Returns (pred_list, num_doc_arrays, num_dim_tiles).
     """
     n_docs = docs.shape[0]
+    dim = docs.shape[1]
     n_queries = queries.shape[0]
     sigma_compare = float(noise.get("sigma_compare", 0.0))
     num_tiles = int(math.ceil(n_docs / array_cols)) if array_cols and array_cols > 0 else 1
+    num_dim_tiles = int(math.ceil(dim / array_rows)) if array_rows and array_rows > 0 else 1
 
-    # --- single array: one selection (comparator error at that one point) ---
+    # --- single array bank: one selection (comparator error at that one point) ---
     if num_tiles <= 1:
-        scores = crossbar_innerproduct_pairwise(docs, queries, noise)
+        scores = _array_scores(docs, queries, noise, array_rows)
         pred, _ = get_array_topk_results(scores, k, sigma_compare=sigma_compare)
-        return pred, 1
+        return pred, 1, num_dim_tiles
 
     # --- multi array: per-array local top-k, then merge ---
     cand_idx = [[] for _ in range(n_queries)]
@@ -118,7 +146,7 @@ def _run_functional(docs, queries, k, noise, array_cols):
         s = t * array_cols
         e = min(n_docs, (t + 1) * array_cols)
         # fresh read noise per array; write noise frozen within this one call
-        tile_scores = crossbar_innerproduct_pairwise(docs[s:e], queries, noise)
+        tile_scores = _array_scores(docs[s:e], queries, noise, array_rows)
         local_idx, local_score = get_array_topk_results(tile_scores, k, sigma_compare=sigma_compare)
         for qi in range(n_queries):
             cand_idx[qi].extend((np.asarray(local_idx[qi]) + s).tolist())
@@ -126,7 +154,7 @@ def _run_functional(docs, queries, k, noise, array_cols):
 
     pred = [topk_merge(cand_idx[qi], cand_score[qi], k, sigma_compare=sigma_compare)
             for qi in range(n_queries)]
-    return pred, num_tiles
+    return pred, num_tiles, num_dim_tiles
 
 
 def evaluate(config, docs=None, queries=None, qrels=None) -> UnifiedResult:
@@ -157,11 +185,12 @@ def evaluate(config, docs=None, queries=None, qrels=None) -> UnifiedResult:
 
     array_cost = _load_array_cost(config["hardware"])
     array_cols = int(array_cost.get("hardware", {}).get("array", {}).get("cols", n_docs))
+    array_rows = int(array_cost.get("hardware", {}).get("array", {}).get("rows", dim))
 
     # 2. Functional line -> Recall@k, nDCG@k under the chosen noise model.
     noise = dict(config.get("noise", {}))
     gt = ideal_topk(docs, queries, k)                       # exact noiseless ground truth
-    pred, num_doc_arrays = _run_functional(docs, queries, k, noise, array_cols)
+    pred, num_doc_arrays, num_dim_arrays = _run_functional(docs, queries, k, noise, array_cols, array_rows)
     recall = recall_at_k(pred, gt)
     ndcg = ndcg_at_k(pred, gt)
 
@@ -184,6 +213,7 @@ def evaluate(config, docs=None, queries=None, qrels=None) -> UnifiedResult:
         n_docs=n_docs, dim=dim, n_queries=n_queries, k=k,
         noise_type=noise.get("noise_type", "gaussian"),
         num_doc_arrays=num_doc_arrays,
+        num_dim_arrays=num_dim_arrays,
         perfeval=asdict(report),
     )
 
